@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="基于纤维倾角各向异性反射与多层清漆模型的 WebGPU 交互式提琴展示。" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%231b130c'/%3E%3Ctext x='32' y='43' font-size='34' text-anchor='middle' fill='%23ffd37a' font-family='serif'%3E%E6%9E%AB%3C/text%3E%3C/svg%3E" />
+    <title>枫纹 · WebGPU 提琴工坊</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="gpu" aria-label="可旋转的三维提琴 WebGPU 视图"></canvas>
+
+      <div id="fallback" class="fallback" hidden>
+        <div class="fallback-card">
+          <h2>需要 WebGPU 环境</h2>
+          <p id="fallback-message">正在检测 WebGPU…</p>
+          <p>请使用最新版 Chrome / Edge，在 <code>chrome://flags</code> 确认 WebGPU 已启用；4K 60 帧测试建议使用独立显卡。</p>
+        </div>
+      </div>
+
+      <header class="brand-bar">
+        <div class="brand">
+          <div class="brand-mark">枫</div>
+          <div>
+            <strong>枫纹工坊</strong>
+            <span>Tiger Maple · WebGPU Luthier Lab</span>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="主导航">
+          <button class="tab active" data-page="display"><i>01</i>琴体展示</button>
+          <button class="tab" data-page="wood"><i>02</i>木纹结构</button>
+          <button class="tab" data-page="varnish"><i>03</i>漆层讲解</button>
+          <button class="tab" data-page="lighting"><i>04</i>灯光布置</button>
+        </nav>
+      </header>
+
+      <section class="title-card" id="titleCard">
+        <p class="eyebrow" id="pageEyebrow">INTERACTIVE INSTRUMENT</p>
+        <h1 id="pageTitle">琴体展示</h1>
+        <p id="pageDescription">拖动旋转琴身，滚轮缩放。主光沿背板纤维平面扫过时，虎纹亮带会按纤维倾角移动并发生极性反转。</p>
+      </section>
+
+      <aside class="panel" id="controlPanel">
+        <!-- 琴体展示 -->
+        <section class="page-panel active" data-panel="display">
+          <div class="card">
+            <h2>选琴与木料</h2>
+            <label class="control">
+              <span>提琴预设</span>
+              <select id="instrumentSelect"></select>
+            </label>
+            <label class="control">
+              <span>木料样本</span>
+              <select id="displayWoodSelect"></select>
+            </label>
+            <label class="control">
+              <span>漆层样本</span>
+              <select id="displayVarnishSelect"></select>
+            </label>
+          </div>
+
+          <div class="card">
+            <h2>实时观看</h2>
+            <label class="control range">
+              <span>主光扫角 <output id="displayLightAngleValue">24°</output></span>
+              <input id="displayLightAngle" type="range" min="-72" max="72" step="0.5" value="24" />
+            </label>
+            <label class="check"><input id="displayAutoSweep" type="checkbox" /><span>自动来回扫光</span></label>
+            <label class="check"><input id="displayAutoRotate" type="checkbox" /><span>自动转琴</span></label>
+            <label class="control range">
+              <span>老琴磨损 <output id="displayWearValue">0.18</output></span>
+              <input id="displayWear" type="range" min="0" max="0.95" step="0.01" value="0.18" />
+            </label>
+            <label class="control range">
+              <span>曝光 <output id="displayExposureValue">1.05</output></span>
+              <input id="displayExposure" type="range" min="0.55" max="1.8" step="0.01" value="1.05" />
+            </label>
+            <div class="button-row">
+              <button class="btn" id="resetCameraBtn">整琴复位</button>
+              <button class="btn" id="backCameraBtn">背板特写</button>
+            </div>
+          </div>
+
+          <div class="card performance-card">
+            <h2>4K / 60 帧性能</h2>
+            <label class="control">
+              <span>渲染分辨率倍率</span>
+              <select id="renderScaleSelect">
+                <option value="0.65">0.65×（流畅）</option>
+                <option value="0.75">0.75×（省电）</option>
+                <option value="1" selected>1.00×（原生）</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.50×（HiDPI）</option>
+              </select>
+            </label>
+            <label class="check"><input id="adaptiveResolution" type="checkbox" checked /><span>掉帧时允许动态分辨率</span></label>
+            <button class="btn primary wide" id="benchmarkBtn">运行 3840×2160 五秒压测</button>
+            <p class="benchmark-result" id="benchmarkResult">压测会临时把绘图缓冲固定为 4K，用于检验像素填充与着色器开销。</p>
+          </div>
+        </section>
+
+        <!-- 木纹结构 -->
+        <section class="page-panel" data-panel="wood">
+          <div class="card formula-card">
+            <h2>纤维朝向模型</h2>
+            <div class="formula">θ(y)=θ<sub>max</sub> sin(2πy / λ)</div>
+            <div class="formula small">F=T cosθ + N sinθ</div>
+            <div class="formula small">I<sub>aniso</sub>=[1−(F·H)²]<sup>k</sup></div>
+            <p>金色条纹不是贴花：波浪纤维在法线与纵向切线之间周期倾斜，半程向量 H 与纤维 F 的垂直关系决定反光。</p>
+          </div>
+
+          <div class="card">
+            <h2>波浪参数</h2>
+            <label class="control range">
+              <span>波浪周期 λ <output id="woodPeriodMmValue">13 mm</output></span>
+              <input id="woodPeriodMm" type="range" min="6" max="36" step="0.5" value="13" />
+            </label>
+            <label class="control range">
+              <span>最大倾角 θmax <output id="woodTiltDegValue">16°</output></span>
+              <input id="woodTiltDeg" type="range" min="4" max="30" step="0.5" value="16" />
+            </label>
+            <label class="control range">
+              <span>各向异性锐度 k <output id="woodSharpnessValue">30</output></span>
+              <input id="woodSharpness" type="range" min="6" max="48" step="1" value="30" />
+            </label>
+            <label class="control range">
+              <span>自然扭曲 <output id="woodWarpValue">0.16 rad</output></span>
+              <input id="woodWarp" type="range" min="0" max="0.55" step="0.01" value="0.16" />
+            </label>
+            <label class="check"><input id="showFibers" type="checkbox" /><span>显示 WebGPU 纤维朝向向量</span></label>
+          </div>
+
+          <div class="card">
+            <h2>扫光与反转验证</h2>
+            <label class="control range">
+              <span>入射光角 L <output id="woodLightAngleValue">24°</output></span>
+              <input id="woodLightAngle" type="range" min="-72" max="72" step="0.5" value="24" />
+            </label>
+            <label class="check"><input id="woodAutoSweep" type="checkbox" /><span>自动扫光</span></label>
+            <button class="btn primary wide" id="swapAngleBtn">转到理论极性反转角</button>
+            <div class="chart-wrap">
+              <svg id="stripeChart" viewBox="0 0 300 118" preserveAspectRatio="none" role="img" aria-label="亮暗条纹强度预测曲线"></svg>
+              <div class="chart-labels"><span>沿背板纵向的反射强度（TS 公式绘制；曲面像素由 WGSL 计算）</span></div>
+            </div>
+            <dl class="readout" id="stripeReadout"></dl>
+            <div class="selfcheck" id="selfCheck">正在校验…</div>
+          </div>
+        </section>
+
+        <!-- 漆层讲解 -->
+        <section class="page-panel" data-panel="varnish">
+          <div class="card formula-card">
+            <h2>多层透明有色清漆</h2>
+            <div class="formula">T<sub>往返</sub>=exp[−σ<sub>λ</sub>d(1/cosθ<sub>l</sub>+1/cosθ<sub>v</sub>)]</div>
+            <p>红通道吸收最少、蓝通道最多。漆越厚，蓝光在入射、底层反射和出射的往返路径中被吃掉得越多，因此颜色更深、更暖。</p>
+          </div>
+
+          <div class="card">
+            <h2>漆层预设</h2>
+            <select id="varnishSelect"></select>
+            <div class="layer-stack" id="layerStack" aria-label="漆层厚度示意图"></div>
+          </div>
+
+          <div class="card">
+            <h2>厚度、吸收与磨损</h2>
+            <label class="control range">
+              <span>漆层数 <output id="layersValue">5</output></span>
+              <input id="layers" type="range" min="2" max="6" step="1" value="5" />
+            </label>
+            <label class="control range">
+              <span>总厚度 <output id="thicknessMmValue">0.22 mm</output></span>
+              <input id="thicknessMm" type="range" min="0.05" max="0.4" step="0.01" value="0.22" />
+            </label>
+            <label class="control range">
+              <span>吸收强度 <output id="absorptionStrengthValue">1.00</output></span>
+              <input id="absorptionStrength" type="range" min="0.25" max="2" step="0.01" value="1" />
+            </label>
+            <label class="control range">
+              <span>层内散射 <output id="scatterStrengthValue">0.16</output></span>
+              <input id="scatterStrength" type="range" min="0" max="0.42" step="0.01" value="0.16" />
+            </label>
+            <label class="control range">
+              <span>镜面粗糙度 <output id="coatRoughnessValue">0.16</output></span>
+              <input id="coatRoughness" type="range" min="0.04" max="0.5" step="0.01" value="0.16" />
+            </label>
+            <label class="control range">
+              <span>岁月磨损 <output id="wearValue">0.18</output></span>
+              <input id="wear" type="range" min="0" max="0.95" step="0.01" value="0.18" />
+            </label>
+            <label class="check"><input id="thicknessHeatmap" type="checkbox" /><span>查看 WebGPU 漆厚热力图</span></label>
+            <div class="thickness-swatches">
+              <div><span id="thinSwatch"></span><small>薄 / 磨损</small></div>
+              <div><span id="thickSwatch"></span><small>厚 / 暖色</small></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 灯光布置 -->
+        <section class="page-panel" data-panel="lighting">
+          <div class="card">
+            <h2>摄影棚灯位预设</h2>
+            <div class="button-row wrap">
+              <button class="btn" data-light-preset="studio">三点布光</button>
+              <button class="btn" data-light-preset="raking">低角扫纹</button>
+              <button class="btn" data-light-preset="warm">暖色美术馆</button>
+              <button class="btn" data-light-preset="archive">档案平光</button>
+            </div>
+            <label class="check"><input id="lightingAutoSweep" type="checkbox" /><span>主光连续转动</span></label>
+          </div>
+
+          <div class="card light-card" data-light="key">
+            <h2>主光 Key</h2>
+            <label class="control range"><span>方位角 <output id="keyAzimuthValue">0°</output></span><input id="keyAzimuth" type="range" min="-180" max="180" step="1" value="0" /></label>
+            <label class="control range"><span>高度角 <output id="keyElevationValue">24°</output></span><input id="keyElevation" type="range" min="-20" max="88" step="1" value="24" /></label>
+            <label class="control range"><span>强度 <output id="keyIntensityValue">3.4</output></span><input id="keyIntensity" type="range" min="0" max="6" step="0.1" value="3.4" /></label>
+            <label class="color-control"><span>颜色</span><input id="keyColor" type="color" value="#ffdbA8" /></label>
+          </div>
+
+          <div class="card light-card" data-light="fill">
+            <h2>补光 Fill</h2>
+            <label class="control range"><span>方位角 <output id="fillAzimuthValue">-52°</output></span><input id="fillAzimuth" type="range" min="-180" max="180" step="1" value="-52" /></label>
+            <label class="control range"><span>高度角 <output id="fillElevationValue">18°</output></span><input id="fillElevation" type="range" min="-20" max="88" step="1" value="18" /></label>
+            <label class="control range"><span>强度 <output id="fillIntensityValue">1.15</output></span><input id="fillIntensity" type="range" min="0" max="4" step="0.05" value="1.15" /></label>
+            <label class="color-control"><span>颜色</span><input id="fillColor" type="color" value="#94b8ff" /></label>
+          </div>
+
+          <div class="card light-card" data-light="rim">
+            <h2>轮廓光 Rim</h2>
+            <label class="control range"><span>方位角 <output id="rimAzimuthValue">132°</output></span><input id="rimAzimuth" type="range" min="-180" max="180" step="1" value="132" /></label>
+            <label class="control range"><span>高度角 <output id="rimElevationValue">38°</output></span><input id="rimElevation" type="range" min="-20" max="88" step="1" value="38" /></label>
+            <label class="control range"><span>强度 <output id="rimIntensityValue">2.2</output></span><input id="rimIntensity" type="range" min="0" max="5" step="0.1" value="2.2" /></label>
+            <label class="color-control"><span>颜色</span><input id="rimColor" type="color" value="#ffb86b" /></label>
+          </div>
+
+          <div class="card">
+            <label class="control range">
+              <span>环境光 <output id="ambientValue">0.22</output></span>
+              <input id="ambient" type="range" min="0" max="0.8" step="0.01" value="0.22" />
+            </label>
+            <label class="control range">
+              <span>曝光 <output id="lightingExposureValue">1.05</output></span>
+              <input id="lightingExposure" type="range" min="0.55" max="1.8" step="0.01" value="1.05" />
+            </label>
+          </div>
+        </section>
+      </aside>
+
+      <div class="stats" id="statsPill">
+        <span class="dot"></span>
+        <strong id="fpsText">-- FPS</strong>
+        <span id="resolutionText">初始化 WebGPU…</span>
+      </div>
+      <div class="hint">拖拽旋转 · 滚轮缩放 · 双指缩放</div>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
